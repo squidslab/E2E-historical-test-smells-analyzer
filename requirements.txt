@@ -1,0 +1,7 @@
+pandas
+tqdm
+pydriller
+GitPython
+tree-sitter
+tree-sitter-typescript
+tree_sitter_javascript
