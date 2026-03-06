@@ -97,7 +97,6 @@ Before running the project ensure the following tools are installed:
 * Python 3.8+
 * pip
 * Git
-* Node.js (required by the smell detector)
 
 ---
 
@@ -220,3 +219,6 @@ This configuration:
 * uses **two parallel workers**
 
 ---
+
+# 🚹​ Contributors
+* Vincenzo Di Nardo

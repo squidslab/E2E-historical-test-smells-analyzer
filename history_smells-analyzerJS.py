@@ -468,8 +468,6 @@ def _extract_smell_rows(commit, repo_name: str, targets: list[dict], by_basename
 
 
 def worker_loop(repo_root: str, repo_name: str, targets: list[dict], by_basename: dict[str, list[int]], release_index, task_q, completed_q, progress_q, repo_open_lock):
-    # PyDriller's Git() writes into .git/config on init, which creates a config.lock.
-    # With multiple processes on Windows this can race; serialize the init.
     with repo_open_lock:
         lock_path = os.path.join(repo_root, ".git", "config.lock")
         if os.path.exists(lock_path):
