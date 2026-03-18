@@ -23,10 +23,10 @@ The goal of this project is to support **empirical software engineering research
 
 Specifically, this tool aims to:
 
-- detect **End-to-End test smells** in E2E test suites
-- analyze their **historical evolution across commits**
-- collect structured data useful for **empirical studies**
-- store the results in **structured databases for further analysis**
+* detect **End-to-End test smells** in E2E test suites
+* analyze their **historical evolution across commits**
+* store the results in **structured databases for further analysis**
+* use the collected structured data for **empirical studies**
 
 # 📌 Project Overview
 
@@ -72,6 +72,11 @@ Historical Analyzer
         ▼
 SQLite Databases
 (historical_smellsJS.db / historical_smellsTS.db)
+        │
+        │
+        ▼
+Empirical analysis
+(scripts and results in /analyses)
 ```
 
 ---
@@ -80,6 +85,12 @@ SQLite Databases
 
 ```
 project-root
+│
+├── analyses/
+│  │
+│  ├── e2e_smells_analyzer.py
+│  ├── e2e_smells_report_plots.py
+│  │
 │
 ├── history_smells-analyzerJS.py
 ├── history_smells-analyzerTS.py
@@ -104,7 +115,7 @@ Before running the project ensure the following tools are installed:
 
 ## 1. Download the E2E Test Smell Detector
 
-Download the repository **e2e-test-smell-analyzer** as a `.zip` file.
+Download the repository [**e2e-test-smell-analyzer**](https://github.com/squidslab/e2e-test-smell-analyzer) as a `.zip` file.
 
 Then:
 
@@ -187,7 +198,7 @@ These datasets can later be used for **empirical analysis or statistical studies
 
 ---
 
-# ✴️​ Environment Variables (Optional)
+# ✴️ Environment Variables (Optional)
 
 The tool supports several environment variables to control the analysis.
 
@@ -202,7 +213,7 @@ The tool supports several environment variables to control the analysis.
 
 ---
 
-# ▶️​ Example Execution (PowerShell)
+# ▶️ Example Execution (PowerShell)
 
 ```
 $env:E2E_TEST_MODE='1'
@@ -220,5 +231,100 @@ This configuration:
 
 ---
 
-# 🚹​ Contributors
+# 6. Empirical analysis tools
+
+This section describes the scripts available in the `analyses/` folder for generating reports and visualizations from the historical databases.
+To execute the scripts, first navigate to the `analyses/` director.
+
+---
+
+## a) Textual Report of Ownership and Smells
+
+Script: `analyses/e2e_smells_analyzer.py`
+
+Generates a detailed textual report about a test file.
+
+**▶️ Single execution (for a repository / specific file):**
+
+```
+python analyses/e2e_smells_analyzer.py <repository> <file_name> --dataset js/ts
+```
+
+**⏩ Batch execution (all files with smells):**
+
+```
+python analyses/e2e_smells_analyzer.py --dataset js/ts
+```
+
+**✴️ Main parameters:**
+
+* `<repository>`: repository name as stored in the DB
+* `<file_name>`: path or name of the test file
+* `--dataset`: required, `js` or `ts`
+* `--db`: (optional) path to the SQLite database
+* `--output`: (optional) output file path
+
+**🔀 Output:**
+
+Report files can be found in the **analyses/reports folder** after they have been generated.
+
+---
+
+## b) Unified Plot Generation from Reports
+
+Script: `analyses/e2e_smells_report_plots.py`
+
+After creating textual reports with `analyses/e2e_smells_analyzer.py`, this script generates a complete set of 5 charts for each report file:
+
+
+1. **Smell distribution**
+
+![Smell distribution bar](assets/1_smell_distribution_bar.png)
+
+2. **Smell evolution over time (with release lines)**
+
+![Smell evolution line](assets/2_smell_evolution_line.png)
+
+3. **Ownership plot**
+
+![Ownership plot](assets/3_ownership_plot.png)
+
+4. **Smells vs release distance**
+
+![Smells vs release distance](assets/4_smells_vs_release_distance.png)
+
+5. **Smell co-occurrence heatmap**
+
+![Smell co-occurrence heatmap](assets/5_smell_cooccurrence_heatmap.png)
+
+**▶️ Single execution (from one report):**
+
+```
+python analyses/e2e_smells_report_plots.py --report analyses/reports/ts/<report_file>.txt
+```
+
+**⏩ Batch execution (all reports):**
+
+```
+python analyses/e2e_smells_report_plots.py --reports-dir analyses/reports
+```
+
+**✴️ Main parameters:**
+
+* `--report`: (optional) path to one report `.txt` file
+* `--reports-dir`: (optional) root folder of report files (default: `analyses/reports`)
+* `--output-root`: (optional) root output folder (default: `analyses/plots`)
+
+**🔀 Output:**
+
+Plots are saved under `analyses/plots/ts/` and `analyses/plots/js/`, inside one folder per repository/file (`<repo>_<file>`).
+
+---
+
+**⚠️​ Note:** All scripts support both single mode (specific repository/file) and batch mode (all files with smells in the DB). In case of errors, check that the database exists and that the parameters are correct.
+
+---
+
+# 🚹 Contributors
+
 * Vincenzo Di Nardo

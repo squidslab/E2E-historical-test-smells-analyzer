@@ -6,3 +6,5 @@ debug_log.txt
 historical_smells.csv
 historical_smellsTS.db
 historical_smellsJS.db
+plots/
+reports/

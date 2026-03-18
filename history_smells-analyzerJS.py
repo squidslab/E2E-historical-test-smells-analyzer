@@ -322,18 +322,77 @@ def _commit_unix_ts(git_repo: Git, commit_hash: str) -> int:
         return 0
 
 
-def _build_targets_index(files_rows: list[tuple[str, str, str]], debug_file):
+def _file_creator_author(git_repo: Git, filepath: str) -> str | None:
+    """Return the author who introduced the file in history."""
+    path = str(Path(filepath))
+    commit_hash = None
+    try:
+        # Earliest commit where the path was added.
+        out = git_repo.repo.git.log("--follow", "--diff-filter=A", "--format=%H", "--reverse", "--", path)
+        commit_hash = next((h for h in out.splitlines() if h), None)
+    except Exception:
+        commit_hash = None
+
+    if not commit_hash:
+        try:
+            # Fallback: earliest commit touching this path.
+            out = git_repo.repo.git.log("--follow", "--format=%H", "--reverse", "--", path)
+            commit_hash = next((h for h in out.splitlines() if h), None)
+        except Exception:
+            commit_hash = None
+
+    if not commit_hash:
+        return None
+
+    try:
+        author = git_repo.repo.git.show("-s", "--format=%an", commit_hash).strip()
+        return author or None
+    except Exception:
+        return None
+
+
+def _file_deleted_in_last_touch(git_repo: Git, filepath: str) -> int:
+    """Return 1 if the latest commit touching the file removed it, else 0."""
+    path = str(Path(filepath))
+
+    try:
+        last_hash = git_repo.repo.git.log("--follow", "-n", "1", "--format=%H", "--", path).strip()
+    except Exception:
+        return 0
+
+    if not last_hash:
+        return 0
+
+    try:
+        name_status = git_repo.repo.git.show("--name-status", "--format=", last_hash, "--", path)
+    except Exception:
+        return 0
+
+    for line in name_status.splitlines():
+        if not line:
+            continue
+        status = line.split("\t", 1)[0].strip()
+        if status.startswith("D"):
+            return 1
+    return 0
+
+
+def _build_targets_index(git_repo: Git, files_rows: list[tuple[str, str, str]], debug_file):
     """Build an index to match ModifiedFile paths quickly (by basename)."""
     targets = []
     by_basename: dict[str, list[int]] = {}
 
     for framework, repo_name, file_path in files_rows:
         normalized = normalize_path(repo_name, file_path)
+        file_creator = _file_creator_author(git_repo, normalized)
+        file_deleted = _file_deleted_in_last_touch(git_repo, normalized)
         targets.append({
             "framework": framework,
             "repo": repo_name,
             "path": normalized,
             "basename": os.path.basename(normalized),
+            "file_creator": file_creator,
+            "file_deleted": file_deleted,
         })
         by_basename.setdefault(os.path.basename(normalized), []).append(len(targets) - 1)
 
@@ -410,6 +469,8 @@ def _extract_smell_rows(commit, repo_name: str, targets: list[dict], by_basename
         for target in matched_targets:
             framework = target["framework"]
             target_path = target["path"]
+            file_creator = target.get("file_creator")
+            file_deleted = target.get("file_deleted", 0)
             found_smell = False
 
             if test_class is not None:
@@ -437,6 +498,8 @@ def _extract_smell_rows(commit, repo_name: str, targets: list[dict], by_basename
                             commit_date,
                             commit_author,
                             commit_message,
+                            file_creator,
+                            file_deleted,
                             nearest_release_tag,
                             nearest_release_date,
                             nearest_previous_release_tag,
@@ -455,6 +518,8 @@ def _extract_smell_rows(commit, repo_name: str, targets: list[dict], by_basename
                     commit_date,
                     commit_author,
                     commit_message,
+                    file_creator,
+                    file_deleted,
                     nearest_release_tag,
                     nearest_release_date,
                     nearest_previous_release_tag,
@@ -515,6 +580,8 @@ def writer_loop(db_path: str, result_q, batch_size: int = SQLITE_BATCH_SIZE):
                 date TEXT,
                 commit_author TEXT,
                 commit_message TEXT,
+                file_creator TEXT,
+                file_deleted INTEGER,
                 nearest_future_release_tag TEXT,
                 nearest_future_release_date TEXT,
                 nearest_previous_release_tag TEXT,
@@ -532,6 +599,10 @@ def writer_loop(db_path: str, result_q, batch_size: int = SQLITE_BATCH_SIZE):
             conn.execute("ALTER TABLE historical_smells ADD COLUMN commit_author TEXT;")
         if "commit_message" not in existing_cols:
             conn.execute("ALTER TABLE historical_smells ADD COLUMN commit_message TEXT;")
+        if "file_creator" not in existing_cols:
+            conn.execute("ALTER TABLE historical_smells ADD COLUMN file_creator TEXT;")
+        if "file_deleted" not in existing_cols:
+            conn.execute("ALTER TABLE historical_smells ADD COLUMN file_deleted INTEGER;")
         if "nearest_future_release_tag" not in existing_cols:
             conn.execute("ALTER TABLE historical_smells ADD COLUMN nearest_future_release_tag TEXT;")
         if "nearest_future_release_date" not in existing_cols:
@@ -555,8 +626,8 @@ def writer_loop(db_path: str, result_q, batch_size: int = SQLITE_BATCH_SIZE):
                 conn.executemany(
                     """
                     INSERT INTO historical_smells (
-                        framework, repository, file, commit_hash, date, commit_author, commit_message, nearest_future_release_tag, nearest_future_release_date, nearest_previous_release_tag, nearest_previous_release_date, smell_type, method, line
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        framework, repository, file, commit_hash, date, commit_author, commit_message, file_creator, file_deleted, nearest_future_release_tag, nearest_future_release_date, nearest_previous_release_tag, nearest_previous_release_date, smell_type, method, line
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     buffer,
                 )
@@ -567,8 +638,8 @@ def writer_loop(db_path: str, result_q, batch_size: int = SQLITE_BATCH_SIZE):
             conn.executemany(
                 """
                 INSERT INTO historical_smells (
-                    framework, repository, file, commit_hash, date, commit_author, commit_message, nearest_future_release_tag, nearest_future_release_date, nearest_previous_release_tag, nearest_previous_release_date, smell_type, method, line
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    framework, repository, file, commit_hash, date, commit_author, commit_message, file_creator, file_deleted, nearest_future_release_tag, nearest_future_release_date, nearest_previous_release_tag, nearest_previous_release_date, smell_type, method, line
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 buffer,
             )
@@ -638,13 +709,13 @@ def main():
                 repo_root = _clone_if_needed(repo_url, local_repo_path, repo_short_name, debug_file)
                 debug_log(debug_file, f"[DEBUG] Using repo root: {repo_root}")
 
-                targets, by_basename = _build_targets_index(files_rows, debug_file)
+                git_repo = Git(repo_root)
+                targets, by_basename = _build_targets_index(git_repo, files_rows, debug_file)
 
                 for t in targets:
                     print(f"📄 File: {t['path']}")
 
                 # commit hashes: only commits that touched at least one target file (much faster)
-                git_repo = Git(repo_root)
                 release_index = _build_release_index(git_repo, debug_file)
 
                 try:
