@@ -7,6 +7,8 @@ from datetime import datetime
 from pathlib import Path
 import re
 
+from pydriller import Repository
+
 
 DB_DEFAULTS = {
 	"ts": "historical_smellsTS.db",
@@ -91,6 +93,85 @@ def _safe_date_key(value: str | None) -> tuple[int, str]:
 
 def _sanitize_filename(value: str) -> str:
 	return re.sub(r"[^a-zA-Z0-9._-]", "_", value)
+
+
+def _resolve_repo_root() -> Path:
+	base_dir = Path(__file__).resolve().parent
+	candidates = [
+		base_dir.parent / "repos",
+		base_dir / "repos",
+		Path("repos"),
+	]
+	for candidate in candidates:
+		if candidate.exists() and candidate.is_dir():
+			return candidate.resolve()
+	raise FileNotFoundError(
+		"Cloned repositories folder not found. Expected a 'repos' directory near the project root."
+	)
+
+
+def _resolve_cloned_repository_path(repository: str, repos_root: Path) -> Path:
+	def _find_git_repo_dir(base: Path) -> Path | None:
+		if not (base.exists() and base.is_dir()):
+			return None
+		if (base / ".git").exists():
+			return base.resolve()
+
+		children = [p for p in base.iterdir() if p.is_dir()]
+		if len(children) == 1 and (children[0] / ".git").exists():
+			return children[0].resolve()
+		return None
+
+	clean_repo = repository.strip()
+	candidates = [
+		repos_root / clean_repo,
+		repos_root / clean_repo.replace("/", "_"),
+		repos_root / clean_repo.replace("/", "-"),
+		repos_root / clean_repo.split("/")[-1],
+	]
+
+	for candidate in candidates:
+		resolved = _find_git_repo_dir(candidate)
+		if resolved:
+			return resolved
+
+	raise FileNotFoundError(
+		f"Cloned repository not found for '{repository}' in {repos_root}. "
+		"Expected a git repository folder under repos/."
+	)
+
+
+def _load_repo_smelly_commits(conn: sqlite3.Connection, repository: str) -> set[str]:
+	rows = conn.execute(
+		"""
+		SELECT DISTINCT commit_hash
+		FROM historical_smells
+		WHERE repository = ?
+		  AND smell_type <> ?
+		""",
+		(repository, NO_SMELL),
+	).fetchall()
+	return {str(row[0]) for row in rows}
+
+
+def _build_newcomer_map_from_repo_history(
+	repository: str,
+	smelly_commits: set[str],
+	repos_root: Path,
+) -> dict[str, bool]:
+	repo_path = _resolve_cloned_repository_path(repository, repos_root)
+	commits_by_author: dict[str, list[str]] = defaultdict(list)
+
+	for commit in Repository(str(repo_path)).traverse_commits():
+		author = _clean_author(commit.author.name)
+		commits_by_author[author].append(commit.hash)
+
+	newcomer_map: dict[str, bool] = {}
+	for author, commit_hashes_desc in commits_by_author.items():
+		first_three_commits = list(reversed(commit_hashes_desc))[:3]
+		newcomer_map[author] = any(ch in smelly_commits for ch in first_three_commits)
+
+	return newcomer_map
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
@@ -280,6 +361,7 @@ def _build_report_data(
 	rows: list[sqlite3.Row],
 	repository: str,
 	file_name: str,
+	newcomer_map: dict[str, bool] | None = None,
 ) -> FileReportData:
 	if not rows:
 		raise ValueError(
@@ -346,8 +428,7 @@ def _build_report_data(
 	developer_reports: list[DeveloperReport] = []
 	for author in sorted(commits_by_author_ordered.keys()):
 		author_commits = commits_by_author_ordered[author]
-		first_three = author_commits[:3]
-		is_newcomer = any(c.commit_hash in smell_commit_set for c in first_three)
+		is_newcomer = bool(newcomer_map.get(author, False)) if newcomer_map else False
 		dev_smell_commits = sum(1 for c in author_commits if c.commit_hash in smell_commit_set)
 		dev_smell_pct = (dev_smell_commits / total_smell_commits * 100.0) if total_smell_commits > 0 else 0.0
 
@@ -734,15 +815,28 @@ def main() -> None:
 	with sqlite3.connect(str(output_db_path)) as report_conn:
 		_init_output_db(report_conn)
 
+	repos_root = _resolve_repo_root()
+	repository_newcomer_cache: dict[str, dict[str, bool]] = {}
 
 	if args.repository and args.file_name:
 		with _connect(db_path) as conn:
 			rows = _fetch_rows(conn, args.repository, args.file_name)
+			smelly_commits = _load_repo_smelly_commits(conn, args.repository)
+
+		newcomer_map = repository_newcomer_cache.get(args.repository)
+		if newcomer_map is None:
+			newcomer_map = _build_newcomer_map_from_repo_history(
+				args.repository,
+				smelly_commits,
+				repos_root,
+			)
+			repository_newcomer_cache[args.repository] = newcomer_map
 
 		report_data = _build_report_data(
 			rows,
 			args.repository,
 			args.file_name,
+			newcomer_map,
 		)
 		report_text = _render_report_text(report_data)
 		print(report_text)
@@ -789,10 +883,21 @@ def main() -> None:
 		try:
 			with _connect(db_path) as conn:
 				rows = _fetch_rows(conn, repository, file_name)
+				smelly_commits = _load_repo_smelly_commits(conn, repository)
+
+			newcomer_map = repository_newcomer_cache.get(repository)
+			if newcomer_map is None:
+				newcomer_map = _build_newcomer_map_from_repo_history(
+					repository,
+					smelly_commits,
+					repos_root,
+				)
+				repository_newcomer_cache[repository] = newcomer_map
 			report_data = _build_report_data(
 				rows,
 				repository,
 				file_name,
+				newcomer_map,
 			)
 
 			with sqlite3.connect(str(output_db_path)) as report_conn:

@@ -1374,6 +1374,187 @@ save_smells_catalog_table_png <- function(output_png) {
   dev.off()
 }
 
+read_historical_smells_incidence <- function(db_path, language_label) {
+  db_resolved <- resolve_input_path(db_path)
+  if (!file.exists(db_resolved)) {
+    stop(sprintf("Database not found: %s", db_resolved))
+  }
+
+  con <- dbConnect(RSQLite::SQLite(), db_resolved)
+  on.exit(dbDisconnect(con), add = TRUE)
+
+  query <- "
+    SELECT
+      framework,
+      repository,
+      file AS file_name,
+      smell_type
+    FROM historical_smells
+    WHERE smell_type IS NOT NULL
+      AND TRIM(smell_type) != ''
+      AND smell_type != 'NO_SMELL'
+  "
+
+  frame <- dbGetQuery(con, query)
+  if (nrow(frame) == 0) {
+    return(data.frame(
+      language = character(0),
+      framework = character(0),
+      repository = character(0),
+      file_name = character(0),
+      smell_type = character(0),
+      test_id = character(0),
+      stringsAsFactors = FALSE
+    ))
+  }
+
+  frame$language <- language_label
+  frame$framework <- trimws(as.character(frame$framework))
+  frame$framework[is.na(frame$framework) | frame$framework == ""] <- "Unknown"
+  frame$repository <- as.character(frame$repository)
+  frame$file_name <- as.character(frame$file_name)
+  frame$smell_type <- trimws(as.character(frame$smell_type))
+
+  catalog <- get_test_smells_catalog()
+  catalog$smell_key <- normalize_smell_label(catalog$smell_name)
+  smell_key <- normalize_smell_label(frame$smell_type)
+  match_index <- match(smell_key, catalog$smell_key)
+  canonical <- catalog$smell_name[match_index]
+  frame$smell_type <- ifelse(is.na(canonical), frame$smell_type, canonical)
+
+  frame$test_id <- paste(frame$repository, frame$file_name, sep = "||")
+
+  frame[, c("language", "framework", "repository", "file_name", "smell_type", "test_id")]
+}
+
+build_smell_incidence_by_language <- function(frame) {
+  if (nrow(frame) == 0) {
+    return(data.frame(
+      smell_type = character(0),
+      distinct_tests_total = integer(0),
+      occurrences_total = integer(0),
+      occurrences_javascript = integer(0),
+      distinct_tests_javascript = integer(0),
+      occurrences_typescript = integer(0),
+      distinct_tests_typescript = integer(0),
+      stringsAsFactors = FALSE
+    ))
+  }
+
+  smells <- sort(unique(frame$smell_type))
+  result <- data.frame(smell_type = smells, stringsAsFactors = FALSE)
+
+  total_occ <- aggregate(list(occurrences_total = frame$smell_type), by = list(smell_type = frame$smell_type), FUN = length)
+  total_tests <- aggregate(
+    list(distinct_tests_total = unique(frame[, c("smell_type", "test_id")])$test_id),
+    by = list(smell_type = unique(frame[, c("smell_type", "test_id")])$smell_type),
+    FUN = length
+  )
+
+  js_frame <- frame[tolower(frame$language) == "javascript", ]
+  ts_frame <- frame[tolower(frame$language) == "typescript", ]
+
+  if (nrow(js_frame) > 0) {
+    js_occ <- aggregate(list(occurrences_javascript = js_frame$smell_type), by = list(smell_type = js_frame$smell_type), FUN = length)
+    js_unique <- unique(js_frame[, c("smell_type", "test_id")])
+    js_tests <- aggregate(list(distinct_tests_javascript = js_unique$test_id), by = list(smell_type = js_unique$smell_type), FUN = length)
+  } else {
+    js_occ <- data.frame(smell_type = character(0), occurrences_javascript = integer(0), stringsAsFactors = FALSE)
+    js_tests <- data.frame(smell_type = character(0), distinct_tests_javascript = integer(0), stringsAsFactors = FALSE)
+  }
+
+  if (nrow(ts_frame) > 0) {
+    ts_occ <- aggregate(list(occurrences_typescript = ts_frame$smell_type), by = list(smell_type = ts_frame$smell_type), FUN = length)
+    ts_unique <- unique(ts_frame[, c("smell_type", "test_id")])
+    ts_tests <- aggregate(list(distinct_tests_typescript = ts_unique$test_id), by = list(smell_type = ts_unique$smell_type), FUN = length)
+  } else {
+    ts_occ <- data.frame(smell_type = character(0), occurrences_typescript = integer(0), stringsAsFactors = FALSE)
+    ts_tests <- data.frame(smell_type = character(0), distinct_tests_typescript = integer(0), stringsAsFactors = FALSE)
+  }
+
+  result <- merge(result, total_tests, by = "smell_type", all.x = TRUE)
+  result <- merge(result, total_occ, by = "smell_type", all.x = TRUE)
+  result <- merge(result, js_occ, by = "smell_type", all.x = TRUE)
+  result <- merge(result, js_tests, by = "smell_type", all.x = TRUE)
+  result <- merge(result, ts_occ, by = "smell_type", all.x = TRUE)
+  result <- merge(result, ts_tests, by = "smell_type", all.x = TRUE)
+
+  numeric_cols <- setdiff(names(result), "smell_type")
+  for (col_name in numeric_cols) {
+    result[[col_name]][is.na(result[[col_name]])] <- 0L
+    result[[col_name]] <- as.integer(result[[col_name]])
+  }
+
+  result[order(result$occurrences_total, decreasing = TRUE), ]
+}
+
+build_smell_incidence_by_framework <- function(frame) {
+  if (nrow(frame) == 0) {
+    return(data.frame(
+      language = character(0),
+      framework = character(0),
+      smell_type = character(0),
+      distinct_tests = integer(0),
+      occurrences = integer(0),
+      stringsAsFactors = FALSE
+    ))
+  }
+
+  occurrences <- aggregate(
+    list(occurrences = frame$smell_type),
+    by = list(language = frame$language, framework = frame$framework, smell_type = frame$smell_type),
+    FUN = length
+  )
+
+  distinct_rows <- unique(frame[, c("language", "framework", "smell_type", "test_id")])
+  tests <- aggregate(
+    list(distinct_tests = distinct_rows$test_id),
+    by = list(language = distinct_rows$language, framework = distinct_rows$framework, smell_type = distinct_rows$smell_type),
+    FUN = length
+  )
+
+  result <- merge(occurrences, tests, by = c("language", "framework", "smell_type"), all.x = TRUE)
+  result$distinct_tests[is.na(result$distinct_tests)] <- 0L
+  result$distinct_tests <- as.integer(result$distinct_tests)
+  result$occurrences <- as.integer(result$occurrences)
+  result[order(result$language, result$framework, -result$occurrences, result$smell_type), ]
+}
+
+save_bad_smell_incidence_tables <- function(js_db_path, ts_db_path, project_root) {
+  js_rows <- read_historical_smells_incidence(js_db_path, "JavaScript")
+  ts_rows <- read_historical_smells_incidence(ts_db_path, "TypeScript")
+  all_rows <- rbind(js_rows, ts_rows)
+
+  if (nrow(all_rows) == 0) {
+    stop("No bad smell rows found in historical_smells for JS/TS databases.")
+  }
+
+  language_table <- build_smell_incidence_by_language(all_rows)
+  framework_table <- build_smell_incidence_by_framework(all_rows)
+
+  reports_dir <- normalizePath(file.path(project_root, "analyses", "reports"), winslash = "/", mustWork = FALSE)
+  if (!dir.exists(reports_dir)) {
+    dir.create(reports_dir, recursive = TRUE)
+  }
+
+  out_language <- normalizePath(
+    file.path(reports_dir, "bad_smells_incidence_language_R.csv"),
+    winslash = "/",
+    mustWork = FALSE
+  )
+  out_framework <- normalizePath(
+    file.path(reports_dir, "bad_smells_incidence_framework_R.csv"),
+    winslash = "/",
+    mustWork = FALSE
+  )
+
+  write.csv(language_table, out_language, row.names = FALSE)
+  write.csv(framework_table, out_framework, row.names = FALSE)
+
+  cat(sprintf("Bad-smell incidence table saved (language): %s\n", out_language))
+  cat(sprintf("Bad-smell incidence table saved (framework): %s\n", out_framework))
+}
+
 args <- commandArgs(trailingOnly = TRUE)
 
 js_db <- "historical_smellsJS.db"
@@ -1386,6 +1567,7 @@ smells_only <- FALSE
 startup_tables_only <- FALSE
 ownership_tables_only <- FALSE
 ridge_release_only <- FALSE
+incidence_only <- FALSE
 
 if (length(args) > 0) {
   i <- 1
@@ -1420,6 +1602,9 @@ if (length(args) > 0) {
     } else if (args[[i]] == "--ridge-release-only") {
       ridge_release_only <- TRUE
       i <- i + 1
+    } else if (args[[i]] == "--incidence-only") {
+      incidence_only <- TRUE
+      i <- i + 1
     } else {
       i <- i + 1
     }
@@ -1444,6 +1629,11 @@ if (startup_tables_only) {
 
 if (ownership_tables_only) {
   save_ownership_newcomer_tables(js_db, ts_db, PROJECT_ROOT)
+  quit(save = "no", status = 0)
+}
+
+if (incidence_only) {
+  save_bad_smell_incidence_tables(js_db, ts_db, PROJECT_ROOT)
   quit(save = "no", status = 0)
 }
 
@@ -1476,3 +1666,4 @@ cat(sprintf("Smells catalog table image saved: %s\n", smells_table_output))
 
 save_startup_bins_table(js_db, ts_db, PROJECT_ROOT)
 save_ownership_newcomer_tables(js_db, ts_db, PROJECT_ROOT)
+save_bad_smell_incidence_tables(js_db, ts_db, PROJECT_ROOT)

@@ -1,6 +1,7 @@
 # 🔍 E2E Historical Test Smells Analyzer
 
 ![Python](https://img.shields.io/badge/Python-3.8+-blue)
+![R](https://img.shields.io/badge/R-4.5.3+-red)
 ![Status](https://img.shields.io/badge/Status-Prototype-orange)
 ![Research](https://img.shields.io/badge/Purpose-Research-green)
 
@@ -385,6 +386,7 @@ Main outputs include:
 * **release proximity summary tables**
 * **startup-bin tables** by bad practice and variation type
 * **ownership/newcomer tables** by bad practice and variation type
+* **bad-smell incidence tables** (global by language and detailed by framework)
 
 The script reads data from:
 
@@ -417,6 +419,14 @@ Selective modes:
 * `--smells-only`
 * `--startup-tables-only`
 * `--ownership-tables-only`
+* `--incidence-only`
+
+Incidence mode generates CSV summaries from both databases with:
+
+* bad smell occurrences across all commits
+* number of distinct test files affected by each bad smell
+* split by language (JavaScript / TypeScript)
+* split by framework inside each language
 
 Optional parameters:
 
@@ -469,6 +479,8 @@ Rscript analyses/R_scripts/main.R --only ownership
 * `analyses/plots/startup_bins_by_bp_variation_ts_R.png`
 * `analyses/plots/ownership_newcomer_by_bp_variation_js_R.png`
 * `analyses/plots/ownership_newcomer_by_bp_variation_ts_R.png`
+* `analyses/reports/bad_smells_incidence_language_R.csv`
+* `analyses/reports/bad_smells_incidence_framework_R.csv`
 
 ---
 
